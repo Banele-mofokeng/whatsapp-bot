@@ -59,13 +59,32 @@ async def handle_whatsapp_message(request: Request):
         return {"status": "error", "message": str(e)}
 
 def send_text(to: str, text: str):
-    # CRITICAL: If EVO_URL is http://evolution-api:8080, ensure service name is correct
+    # Ensure 'to' is just the number if it contains @s.whatsapp.net
+    clean_number = to.split('@')[0] 
+    
     url = f"{EVO_URL}/message/sendText/{INSTANCE}"
-    headers = {"apikey": EVO_KEY, "Content-Type": "application/json"}
-    payload = {"number": to, "text": text}
+    headers = {
+        "apikey": EVO_KEY, 
+        "Content-Type": "application/json"
+    }
+    
+    # Evolution API v2 strictly requires this structure
+    payload = {
+        "number": clean_number,
+        "text": text,
+        "options": {
+            "delay": 1200,
+            "presence": "composing"
+        }
+    }
+    
+    print(f"📤 Sending Payload to {url}: {payload}") # Debugging
     
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        return {"status_code": response.status_code, "response": response.text}
+        print(f"📡 API Response Code: {response.status_code}")
+        print(f"📡 API Response Body: {response.text}")
+        return response.json()
     except Exception as e:
+        print(f"❌ Network Error: {str(e)}")
         return {"error": str(e)}
