@@ -4,43 +4,84 @@ import os
 
 app = FastAPI()
 
-# These variables come from your EasyPanel environment settings
-EVO_URL = os.getenv("EVOLUTION_API_URL")
+# 1. Configuration - These should be set in EasyPanel Environment Variables
+# Example: http://evolution-api.whatsapp-1:8080 (Internal) or your Public IP
+EVO_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
 EVO_KEY = os.getenv("EVOLUTION_API_KEY")
 INSTANCE = os.getenv("INSTANCE_NAME")
 
+@app.get("/")
+def home():
+    return {"status": "Bot is running"}
+
 @app.post("/webhook")
 async def handle_whatsapp_message(request: Request):
-    data = await request.json()
-    
-    # 1. Extract the message and sender's number
-    # Evolution API sends data in a specific "MESSAGES_UPSERT" format
     try:
-        message_text = data['data']['message']['conversation']
-        remote_jid = data['data']['key']['remoteJid']
-        from_me = data['data']['key']['fromMe']
+        data = await request.json()
         
-        # 2. Ignore messages sent by the bot itself to avoid infinite loops
-        if from_me:
-            return {"status": "ignored"}
+        # Log the incoming message event type for debugging
+        event_type = data.get("event", "unknown")
+        print(f"📥 Received Event: {event_type}")
 
-        # 3. Simple Logic: If user says "Hi", reply with a greeting
-        if "hi" in message_text.lower():
-            send_text(remote_jid, "👋 Hello! Your FastAPI bot is officially alive.")
+        # Check if this is a message update (MESSAGES_UPSERT)
+        if event_type == "messages.upsert":
+            message_data = data.get("data", {})
+            message_content = message_data.get("message", {})
+            key = message_data.get("key", {})
             
-    except KeyError:
-        # This handles other events like status updates or image messages
-        pass
+            remote_jid = key.get("remoteJid")
+            from_me = key.get("fromMe", False)
 
-    return {"status": "success"}
+            # 1. Ignore messages sent by the bot itself to prevent infinite loops
+            if from_me:
+                return {"status": "ignored", "reason": "message_from_me"}
 
-def send_text(to, text):
+            # 2. Extract text (handles direct text and extended messages)
+            text = message_content.get("conversation") or \
+                   message_content.get("extendedTextMessage", {}).get("text", "")
+
+            print(f"💬 Message from {remote_jid}: {text}")
+
+            # 3. Simple Bot Logic: Reply to 'hi' or 'hello'
+            if text and any(word in text.lower() for word in ["hi", "hello", "hey"]):
+                reply_text = "👋 Hello! Your FastAPI bot is officially working."
+                print(f"🚀 Sending reply to {remote_jid}...")
+                
+                result = send_text(remote_jid, reply_text)
+                print(f"📤 Send Result: {result}")
+
+        return {"status": "success"}
+
+    except Exception as e:
+        print(f"❌ Error in webhook: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+def send_text(to: str, text: str):
+    """
+    Sends a text message via the Evolution API
+    """
     url = f"{EVO_URL}/message/sendText/{INSTANCE}"
-    headers = {"apikey": EVO_KEY, "Content-Type": "application/json"}
+    headers = {
+        "apikey": EVO_KEY,
+        "Content-Type": "application/json"
+    }
     payload = {
         "number": to,
-        "options": {"delay": 1200, "presence": "composing"},
-        "textMessage": {"text": text}
+        "text": text,
+        "options": {
+            "delay": 1200,
+            "presence": "composing",
+            "linkPreview": False
+        }
     }
-    response = requests.post(url, json=payload, headers=headers)
-    return response.json()
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=9000)
