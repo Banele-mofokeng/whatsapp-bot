@@ -9,7 +9,7 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 EVO_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
 EVO_KEY = os.getenv("EVOLUTION_API_KEY")
 INSTANCE = os.getenv("INSTANCE_NAME")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://postgres:1a4d1b7774b22ad8dca6@whatsapp-1_evolution-api-db:5432/whatsapp-1?sslmode=disable")
 
 # --- DATABASE MODELS ---
 class Appointment(SQLModel, table=True):
