@@ -9,7 +9,7 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 EVO_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
 EVO_KEY = os.getenv("EVOLUTION_API_KEY")
 INSTANCE = os.getenv("INSTANCE_NAME")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@booking-db:5432/db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- DATABASE MODELS ---
 class Appointment(SQLModel, table=True):
