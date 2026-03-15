@@ -4,14 +4,24 @@ from datetime import datetime, timedelta, time
 from fastapi import FastAPI, Request
 from sqlmodel import SQLModel, Field, create_engine, Session, select
 
-# --- CONFIGURATION ---
+# --- 1. CONFIGURATION ---
 # These must be set in your EasyPanel Environment Variables
 EVO_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
 EVO_KEY = os.getenv("EVOLUTION_API_KEY")
-INSTANCE = os.getenv("INSTANCE_NAME")
-DATABASE_URL = os.getenv("DATABASE_URL")
+INSTANCE = os.getenv("INSTANCE_NAME", "Banele")
 
-# --- DATABASE MODELS ---
+# Database Connection Logic
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Default fallback using your exact internal string
+if not DATABASE_URL:
+    DATABASE_URL = "postgresql://postgres:0e6dc8c3d4a23e601efe@whatsapp_bot_booking-db:5432/whatsapp_bot"
+
+engine = create_engine(DATABASE_URL)
+
+# --- 2. DATABASE MODELS ---
 class Appointment(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     customer_number: str
@@ -20,19 +30,19 @@ class Appointment(SQLModel, table=True):
     appointment_date: datetime
     status: str = "Confirmed"
 
-engine = create_engine(DATABASE_URL)
-
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
-# --- APP INITIALIZATION ---
+# --- 3. APP INITIALIZATION ---
 app = FastAPI()
 
 @app.on_event("startup")
 def on_startup():
+    print("🚀 Bot starting up...")
     create_db_and_tables()
+    print("✅ Database tables verified/created.")
 
-# --- HELPER FUNCTIONS ---
+# --- 4. HELPER FUNCTIONS ---
 
 def send_whatsapp(endpoint: str, payload: dict):
     """Generic function to send data to Evolution API"""
@@ -40,6 +50,7 @@ def send_whatsapp(endpoint: str, payload: dict):
     headers = {"apikey": EVO_KEY, "Content-Type": "application/json"}
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"📡 API Response ({endpoint}): {response.status_code} - {response.text}")
         return response.json()
     except Exception as e:
         print(f"❌ API Error: {str(e)}")
@@ -56,6 +67,7 @@ def get_available_slots(target_date: datetime.date):
             Appointment.appointment_date <= datetime.combine(target_date, time.max)
         )
         booked = session.exec(statement).all()
+        # Extract hours that are already taken
         booked_times = [a.appointment_date.strftime("%H:%M") for a in booked]
 
     slots = []
@@ -67,14 +79,14 @@ def get_available_slots(target_date: datetime.date):
         curr += timedelta(hours=1)
     return slots
 
-# --- WEBHOOK HANDLER ---
+# --- 5. WEBHOOK HANDLER ---
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     data = await request.json()
     event = data.get("event")
     
-    # 1. Handle New Incoming Messages
+    # A. Handle New Incoming Messages
     if event == "messages.upsert":
         msg_data = data.get("data", {})
         if msg_data.get("key", {}).get("fromMe"): return {"status": "ignored"}
@@ -82,20 +94,28 @@ async def handle_webhook(request: Request):
         customer_num = msg_data['key']['remoteJid']
         text = (msg_data.get("message", {}).get("conversation") or "").lower()
 
-        if "book" in text or "hi" in text:
-            # Send initial Menu
+        if any(word in text for word in ["hi", "book", "hello", "menu"]):
+            # Main Menu with v2.3.7 Schema (displayText and type: reply)
             payload = {
                 "number": customer_num,
                 "title": "Banele's Booking Bot 📅",
                 "description": "How can we help you today?",
                 "buttons": [
-                    {"display": "Book for Tomorrow", "id": "action_book_tomorrow"},
-                    {"display": "My Appointments", "id": "action_view"}
+                    {
+                        "type": "reply", 
+                        "displayText": "Book for Tomorrow", 
+                        "id": "action_book_tomorrow"
+                    },
+                    {
+                        "type": "reply", 
+                        "displayText": "My Appointments", 
+                        "id": "action_view"
+                    }
                 ]
             }
             send_whatsapp("message/sendButtons", payload)
 
-    # 2. Handle Button Responses
+    # B. Handle Button Responses
     elif event == "buttons.response":
         button_id = data['data']['id']
         customer_num = data['data']['key']['remoteJid']
@@ -106,10 +126,19 @@ async def handle_webhook(request: Request):
             slots = get_available_slots(tomorrow.date())
             
             if not slots:
-                send_whatsapp("message/sendText", {"number": customer_num, "text": "Sorry, tomorrow is fully booked!"})
+                send_whatsapp("message/sendText", {
+                    "number": customer_num, 
+                    "text": "Sorry, tomorrow is fully booked!"
+                })
             else:
                 # Send List of Slots
-                rows = [{"title": f"Time: {s}", "rowId": f"final_book_{date_str}_{s}"} for s in slots]
+                rows = [
+                    {
+                        "title": f"Time: {s}", 
+                        "description": "Tap to select this time slot",
+                        "rowId": f"final_book_{date_str}_{s}"
+                    } for s in slots
+                ]
                 payload = {
                     "number": customer_num,
                     "title": "Select a Time 🕒",
@@ -119,16 +148,17 @@ async def handle_webhook(request: Request):
                 }
                 send_whatsapp("message/sendList", payload)
 
-    # 3. Handle List Selections (Final Booking)
+    # C. Handle List Selections (Final Booking)
     elif event == "list.response":
-        row_id = data['data']['rowId'] # e.g., final_book_2026-03-16_10:00
+        row_id = data['data']['rowId']
         customer_num = data['data']['key']['remoteJid']
-        customer_name = data['data']['pushName']
+        customer_name = data.get("data", {}).get("pushName", "Valued Customer")
 
         if row_id.startswith("final_book_"):
+            # rowId format: final_book_2026-03-16_10:00
             parts = row_id.split("_")
-            date_part = parts[2] # 2026-03-16
-            time_part = parts[3] # 10:00
+            date_part = parts[2]
+            time_part = parts[3]
             
             dt_obj = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M")
             
@@ -144,7 +174,7 @@ async def handle_webhook(request: Request):
 
             send_whatsapp("message/sendText", {
                 "number": customer_num, 
-                "text": f"✅ Confirmed! See you on {date_part} at {time_part}."
+                "text": f"✅ Confirmed! {customer_name}, your appointment is set for {date_part} at {time_part}."
             })
 
     return {"status": "success"}
